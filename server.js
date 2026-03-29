@@ -8,9 +8,10 @@ const PORT = process.env.PORT || 3000;
 // In-memory store
 const previews = new Map();
 const PREVIEW_TTL_MS = 60 * 60 * 1000; // 1 hour
-const MAX_HTML_SIZE = 5 * 1024 * 1024;
+const MAX_HTML_SIZE = 5 * 1024 * 1024;   // 5 MB for single HTML string
+const MAX_FILES_SIZE = 10 * 1024 * 1024; // 10 MB for multi-file payload
 
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '10mb' })); // increased limit for multi-file
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Helper: generate ID
@@ -27,12 +28,71 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 // ----------------------------------------------------------------------
-// ENHANCED PREVIEW API – supports frameworks
+// MULTI-FILE BUNDLER – inlines CSS/JS into index.html
+function bundleMultiFile(files) {
+  // Find the main HTML file (index.html or index.htm)
+  let htmlContent = files['index.html'] || files['index.htm'];
+  if (!htmlContent) {
+    // No index file: create a fallback page that lists available files
+    let fileList = Object.keys(files).map(f => `<li>${f}</li>`).join('');
+    htmlContent = `<!DOCTYPE html>
+<html>
+<head><title>Multi-File Preview</title></head>
+<body>
+  <h2>⚠️ No index.html found</h2>
+  <p>Available files:</p>
+  <ul>${fileList}</ul>
+</body>
+</html>`;
+  }
+
+  // Collect CSS and JS files
+  let cssInjection = '';
+  let jsInjection = '';
+  for (const [filePath, content] of Object.entries(files)) {
+    if (filePath.endsWith('.css')) {
+      cssInjection += `<style>/* ${filePath} */\n${content}\n</style>\n`;
+    } else if (filePath.endsWith('.js')) {
+      jsInjection += `<script>/* ${filePath} */\n${content}\n</script>\n`;
+    }
+  }
+
+  // Inject into <head> or fallback
+  if (cssInjection || jsInjection) {
+    if (htmlContent.includes('</head>')) {
+      htmlContent = htmlContent.replace('</head>', `${cssInjection}\n${jsInjection}\n</head>`);
+    } else if (htmlContent.includes('<body')) {
+      htmlContent = htmlContent.replace('<body', `<head>${cssInjection}\n${jsInjection}</head><body`);
+    } else {
+      htmlContent = `<!DOCTYPE html><html><head>${cssInjection}\n${jsInjection}</head><body>${htmlContent}</body></html>`;
+    }
+  }
+  return htmlContent;
+}
+
+// ----------------------------------------------------------------------
+// ENHANCED PREVIEW API – supports html (string) or files (object)
 app.post('/api/preview', (req, res) => {
   try {
-    let { html, framework = 'vanilla' } = req.body;
+    let { html, files, framework = 'vanilla' } = req.body;
+
+    // MULTI-FILE PROJECT
+    if (files && typeof files === 'object') {
+      // Optional: enforce size limit on total files
+      let totalSize = 0;
+      for (const content of Object.values(files)) {
+        totalSize += Buffer.byteLength(content, 'utf8');
+        if (totalSize > MAX_FILES_SIZE) {
+          return res.status(413).json({ error: 'Total files size exceeds 10MB limit' });
+        }
+      }
+      html = bundleMultiFile(files);
+      framework = 'vanilla'; // multi-file projects are treated as vanilla HTML/CSS/JS
+    }
+
+    // SINGLE HTML FILE (or after bundling)
     if (typeof html !== 'string') {
-      return res.status(400).json({ error: 'Missing "html" field' });
+      return res.status(400).json({ error: 'Missing "html" string or "files" object' });
     }
     if (Buffer.byteLength(html, 'utf8') > MAX_HTML_SIZE) {
       html = html.slice(0, MAX_HTML_SIZE);
@@ -63,7 +123,7 @@ app.post('/api/preview', (req, res) => {
   }
 });
 
-// React wrapper: injects React, ReactDOM, Babel, and compiles JSX on the fly
+// React wrapper (unchanged)
 function wrapReact(userCode) {
   return `<!DOCTYPE html>
 <html>
@@ -94,7 +154,7 @@ function wrapReact(userCode) {
 </html>`;
 }
 
-// Vue wrapper: uses Vue 3 CDN with template compiler
+// Vue wrapper (unchanged)
 function wrapVue(userCode) {
   return `<!DOCTYPE html>
 <html>
@@ -120,7 +180,7 @@ function wrapVue(userCode) {
 </html>`;
 }
 
-// Svelte wrapper: uses the Svelte compiler CDN (svelte/compiler) – experimental
+// Svelte wrapper (unchanged)
 function wrapSvelte(userCode) {
   return `<!DOCTYPE html>
 <html>
@@ -147,7 +207,7 @@ function wrapSvelte(userCode) {
 </html>`;
 }
 
-// Angular wrapper: minimal starter with AngularJS or Angular? I'll use Angular (v16) with standalone component
+// Angular wrapper (unchanged)
 function wrapAngular(userCode) {
   return `<!DOCTYPE html>
 <html>
@@ -191,6 +251,6 @@ app.get('/preview/:id', (req, res) => {
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => {
-  console.log(`🚀 Enhanced Preview Engine running on port ${PORT}`);
-  console.log(`   Supports: vanilla, react, vue, svelte, angular`);
+  console.log(`🚀 Multi‑File Preview Engine running on port ${PORT}`);
+  console.log(`   Supports: vanilla, react, vue, svelte, angular, and multi‑file projects`);
 });

@@ -5,30 +5,33 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// In-memory store for previews
+// In-memory store for previews: { id: { html, createdAt } }
 const previews = new Map();
 
-// TTL: previews expire after 60 minutes
+// TTL: previews expire after 60 minutes (3600000 ms)
 const PREVIEW_TTL_MS = 60 * 60 * 1000;
 
-// Max HTML size (5 MB) – for single HTML strings
+// Max HTML size (5 MB) – prevents memory abuse
 const MAX_HTML_SIZE = 5 * 1024 * 1024;
-// Max total size for multi‑file projects (10 MB)
+
+// Max total files size (10 MB) – for multi-file projects
 const MAX_FILES_SIZE = 10 * 1024 * 1024;
 
-// Cleanup interval
+// Cleanup interval: run every 30 minutes
 const CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 
-// Middleware
-app.use(express.json({ limit: '10mb' })); // increased for multi‑file
+// Middleware (increased limit to 10MB for multi-file)
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper: generate random ID
+// ----------------------------------------------------------------------
+// Helper: generate a short random ID (like "abc123def")
 function generateId() {
   return crypto.randomBytes(8).toString('hex');
 }
 
-// Background cleanup
+// ----------------------------------------------------------------------
+// Background cleanup: remove expired previews
 function cleanupPreviews() {
   const now = Date.now();
   let removed = 0;
@@ -42,20 +45,22 @@ function cleanupPreviews() {
     console.log(`🧹 Cleaned up ${removed} expired preview(s). Active: ${previews.size}`);
   }
 }
+
+// Run cleanup on startup and periodically
 setInterval(cleanupPreviews, CLEANUP_INTERVAL_MS);
-cleanupPreviews();
+cleanupPreviews(); // initial call
 
 // ----------------------------------------------------------------------
-// Multi‑file bundler: takes a `files` object and returns a single HTML string
+// Multi-file bundler: inlines CSS/JS into the HTML
 function bundleMultiFile(files) {
-  // 1. Find the main HTML file
+  // Find the main HTML file (index.html or index.htm)
   let htmlContent = files['index.html'] || files['index.htm'];
   if (!htmlContent) {
-    // No index file: create a fallback page listing all files
-    const fileList = Object.keys(files).map(f => `<li>${f}</li>`).join('');
+    // No index file: create a fallback page that lists available files
+    let fileList = Object.keys(files).map(f => `<li>${f}</li>`).join('');
     htmlContent = `<!DOCTYPE html>
 <html>
-<head><title>Multi‑File Preview</title></head>
+<head><title>Multi-File Preview</title></head>
 <body>
   <h2>⚠️ No index.html found</h2>
   <p>Available files:</p>
@@ -64,7 +69,7 @@ function bundleMultiFile(files) {
 </html>`;
   }
 
-  // 2. Collect CSS and JS files
+  // Collect CSS and JS files
   let cssInjection = '';
   let jsInjection = '';
   for (const [filePath, content] of Object.entries(files)) {
@@ -75,18 +80,16 @@ function bundleMultiFile(files) {
     }
   }
 
-  // 3. Inject CSS and JS into the HTML
+  // Inject into <head> or fallback
   if (cssInjection || jsInjection) {
     if (htmlContent.includes('</head>')) {
       htmlContent = htmlContent.replace('</head>', `${cssInjection}\n${jsInjection}\n</head>`);
     } else if (htmlContent.includes('<body')) {
       htmlContent = htmlContent.replace('<body', `<head>${cssInjection}\n${jsInjection}</head><body`);
     } else {
-      // Very minimal HTML – wrap everything
       htmlContent = `<!DOCTYPE html><html><head>${cssInjection}\n${jsInjection}</head><body>${htmlContent}</body></html>`;
     }
   }
-
   return htmlContent;
 }
 
@@ -96,9 +99,9 @@ app.post('/api/preview', (req, res) => {
   try {
     let { html, files } = req.body;
 
-    // Handle multi‑file project
+    // If files object is provided, bundle it into a single HTML
     if (files && typeof files === 'object') {
-      // Enforce size limit
+      // Optional: enforce size limit on total files
       let totalSize = 0;
       for (const content of Object.values(files)) {
         totalSize += Buffer.byteLength(content, 'utf8');
@@ -109,23 +112,25 @@ app.post('/api/preview', (req, res) => {
       html = bundleMultiFile(files);
     }
 
-    // Single HTML string (or after bundling)
+    // Validate input (must have html after bundling)
     if (typeof html !== 'string') {
-      return res.status(400).json({ error: 'Missing or invalid "html" field (must be a string).' });
+      return res.status(400).json({ error: 'Missing or invalid "html" field (or "files" object).' });
     }
 
-    // Truncate overly large payload
+    // Truncate overly large payload (prevent memory exhaustion)
     if (Buffer.byteLength(html, 'utf8') > MAX_HTML_SIZE) {
       html = html.slice(0, MAX_HTML_SIZE);
       console.warn(`⚠️  Preview truncated to ${MAX_HTML_SIZE} bytes`);
     }
 
+    // Generate unique ID and store
     const id = generateId();
     previews.set(id, {
       html,
       createdAt: Date.now(),
     });
 
+    // Return preview URL
     const previewUrl = `${req.protocol}://${req.get('host')}/preview/${id}`;
     res.json({ previewUrl, id });
   } catch (err) {
@@ -135,12 +140,13 @@ app.post('/api/preview', (req, res) => {
 });
 
 // ----------------------------------------------------------------------
-// Serve a preview
+// Serve a preview (raw HTML)
 app.get('/preview/:id', (req, res) => {
   const { id } = req.params;
   const entry = previews.get(id);
 
   if (!entry) {
+    // If not found, show a friendly 404 page instead of raw error
     return res.status(404).send(`
       <!DOCTYPE html>
       <html>
@@ -154,14 +160,18 @@ app.get('/preview/:id', (req, res) => {
     `);
   }
 
+  // Directly serve the HTML with proper headers
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  // Optional: add sandbox headers (allows scripts but restricts top navigation)
   res.setHeader('Content-Security-Policy', "sandbox allow-same-origin allow-scripts allow-popups allow-forms");
+
   res.send(entry.html);
 });
 
 // ----------------------------------------------------------------------
-// Health check
+// Health check (for uptime monitors)
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -173,8 +183,9 @@ app.get('/health', (req, res) => {
 // ----------------------------------------------------------------------
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Sandbox Preview Engine (multi‑file ready) running on port ${PORT}`);
+  console.log(`🚀 Sandbox Preview Engine running on port ${PORT}`);
   console.log(`   Demo UI: http://localhost:${PORT}`);
-  console.log(`   API: POST /api/preview (accepts "html" or "files")`);
+  console.log(`   API: POST /api/preview`);
   console.log(`   Preview: GET /preview/:id`);
+  console.log(`   Multi-file support: send { "files": { ... } } instead of "html"`);
 });

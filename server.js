@@ -59,7 +59,7 @@ app.post('/api/preview', (req, res) => {
 });
 
 // ----------------------------------------------------------------------
-// Serve preview page with Sandpack embed (fixed)
+// Serve preview page with Sandpack (using CDN for React & Sandpack)
 app.get('/preview/:id', (req, res) => {
   const { id } = req.params;
   const entry = previews.get(id);
@@ -68,24 +68,28 @@ app.get('/preview/:id', (req, res) => {
   }
 
   const files = entry.files;
-  // Convert files to Sandpack format: { "/index.js": { code: "..." } }
+  // Convert files object to a map that Sandpack understands
   const sandpackFiles = {};
   for (const [filePath, content] of Object.entries(files)) {
+    // Ensure path starts with '/'
     const normalizedPath = filePath.startsWith('/') ? filePath : '/' + filePath;
-    sandpackFiles[normalizedPath] = { code: content };
+    sandpackFiles[normalizedPath] = content;
   }
   const filesJson = JSON.stringify(sandpackFiles).replace(/</g, '\\u003c');
 
-  // Determine entry point
-  let entryPoint = '/index.html';
+  // Determine template (default to react if package.json has react or if .jsx files exist)
+  let template = 'vanilla';
   if (files['package.json']) {
-    // Sandpack will auto-detect entry from package.json, but we can hint
-    entryPoint = '/index.js';
+    try {
+      const pkg = JSON.parse(files['package.json']);
+      if (pkg.dependencies && (pkg.dependencies.react || pkg.devDependencies && pkg.devDependencies.react)) {
+        template = 'react';
+      }
+    } catch(e) {}
   }
-  if (files['src/index.js']) entryPoint = '/src/index.js';
-  if (files['src/index.tsx']) entryPoint = '/src/index.tsx';
+  // Also check for .jsx files
+  if (!template && Object.keys(files).some(f => f.endsWith('.jsx'))) template = 'react';
 
-  // Use the official Sandpack React UMD bundle and React/ReactDOM for the embed
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -96,31 +100,28 @@ app.get('/preview/:id', (req, res) => {
     body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
     #root { width: 100%; height: 100%; }
   </style>
-  <!-- Load React, ReactDOM, and Sandpack -->
+  <!-- Load React, ReactDOM, and Sandpack from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@codesandbox/sandpack-react@2.19.10/dist/index.umd.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@codesandbox/sandpack-react@2.19.10/dist/index.css">
+  <script src="https://cdn.jsdelivr.net/npm/@codesandbox/sandpack-react@2.20.0/dist/index.umd.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@codesandbox/sandpack-react@2.20.0/dist/index.css">
 </head>
 <body>
   <div id="root"></div>
   <script>
     // Wait for Sandpack to be available
-    function initSandpack() {
-      if (!window.Sandpack) {
-        console.error('Sandpack not loaded yet, retrying...');
-        setTimeout(initSandpack, 500);
+    function init() {
+      if (!window.SandpackReact) {
+        setTimeout(init, 100);
         return;
       }
-      const { Sandpack } = window.Sandpack;
+      const { Sandpack } = window.SandpackReact;
+      const files = ${filesJson};
       const root = ReactDOM.createRoot(document.getElementById('root'));
       root.render(
         React.createElement(Sandpack, {
-          files: ${filesJson},
-          template: 'react',
-          customSetup: {
-            entry: '${entryPoint}',
-          },
+          files: files,
+          template: '${template}',
           options: {
             showNavigator: true,
             showConsole: true,
@@ -128,11 +129,16 @@ app.get('/preview/:id', (req, res) => {
             showLineNumbers: true,
             showInlineErrors: true,
             showErrorOverlay: true,
+            editorHeight: '100%',
+            editorWidthPercentage: 50,
+          },
+          customSetup: {
+            entry: '/index.js',
           },
         })
       );
     }
-    initSandpack();
+    init();
   </script>
 </body>
 </html>`;
@@ -147,6 +153,6 @@ app.get('/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Sandpack Preview Engine running on port ${PORT}`);
-  console.log(`   Supports npm packages, package.json, Vite/Next.js via Sandpack`);
-  console.log(`   Shows runtime errors with overlay`);
+  console.log(`   Uses Sandpack React CDN for full sandbox`);
+  console.log(`   Supports npm packages, multi-file projects`);
 });

@@ -7,8 +7,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const previews = new Map();
-const PREVIEW_TTL_MS = 60 * 60 * 1000; // 1 hour
-const MAX_FILES_SIZE = 10 * 1024 * 1024; // 10 MB
+const PREVIEW_TTL_MS = 60 * 60 * 1000;
+const MAX_FILES_SIZE = 10 * 1024 * 1024;
 
 app.use(cors({ origin: true, credentials: true, optionsSuccessStatus: 200 }));
 app.options('*', cors());
@@ -59,7 +59,7 @@ app.post('/api/preview', (req, res) => {
 });
 
 // ----------------------------------------------------------------------
-// Serve preview page with Nodepod sandbox
+// Serve preview page with esbuild-wasm + iframe
 app.get('/preview/:id', (req, res) => {
   const { id } = req.params;
   const entry = previews.get(id);
@@ -75,14 +75,14 @@ app.get('/preview/:id', (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nodepod Sandbox Preview</title>
+  <title>Preview Sandbox</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body, html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, 'Segoe UI', monospace; }
+    body, html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, -apple-system, 'Segoe UI', monospace; }
     #toolbar {
       background: #1e1e2f;
       color: white;
-      padding: 10px 20px;
+      padding: 8px 16px;
       font-size: 13px;
       display: flex;
       justify-content: space-between;
@@ -93,20 +93,19 @@ app.get('/preview/:id', (req, res) => {
       background: #0a5;
       border: none;
       color: white;
-      padding: 6px 16px;
-      border-radius: 6px;
+      padding: 4px 12px;
+      border-radius: 4px;
       cursor: pointer;
-      font-weight: 500;
     }
     #run-btn:hover { background: #0a7; }
-    #container { height: calc(100% - 50px); }
-    #preview-frame {
+    #container { height: calc(100% - 45px); }
+    iframe {
       width: 100%;
       height: 100%;
       border: none;
       background: white;
     }
-    #error-overlay {
+    #error {
       position: fixed;
       bottom: 20px;
       left: 20px;
@@ -137,97 +136,138 @@ app.get('/preview/:id', (req, res) => {
       z-index: 200;
     }
   </style>
-  <!-- Import map for Nodepod -->
-  <script type="importmap">
-    {
-      "imports": {
-        "@scelar/nodepod": "https://esm.sh/@scelar/nodepod@0.2.3"
-      }
-    }
-  </script>
+  <script src="https://cdn.jsdelivr.net/npm/esbuild-wasm@0.20.2/esbuild.wasm.js"></script>
 </head>
 <body>
 <div id="toolbar">
-  <span>⚡ Nodepod Sandbox (npm install + dev server)</span>
-  <button id="run-btn">▶ Run Preview</button>
+  <span>⚡ esbuild + iframe sandbox</span>
+  <button id="run-btn">▶ Run</button>
 </div>
 <div id="container">
   <iframe id="preview-frame" title="preview" sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals"></iframe>
 </div>
-<div id="error-overlay"></div>
+<div id="error"></div>
 
-<script type="module">
-  import { Nodepod } from '@scelar/nodepod';
-
+<script>
   const files = ${filesJson};
+  const fileMap = new Map(Object.entries(files));
   const iframe = document.getElementById('preview-frame');
-  const errorDiv = document.getElementById('error-overlay');
-  const runBtn = document.getElementById('run-btn');
+  const errorDiv = document.getElementById('error');
 
-  async function runSandbox() {
+  // Helper: rewrite import specifiers to esm.sh CDN
+  function rewriteImports(code) {
+    return code.replace(/import\\s+.*?from\\s+['"]([^'"]+)['"]/g, (match, specifier) => {
+      if (specifier.startsWith('.') || specifier.startsWith('/')) return match;
+      return match.replace(specifier, 'https://esm.sh/' + specifier);
+    }).replace(/import\\(['"]([^'"]+)['"]\\)/g, (match, specifier) => {
+      if (specifier.startsWith('.') || specifier.startsWith('/')) return match;
+      return match.replace(specifier, 'https://esm.sh/' + specifier);
+    });
+  }
+
+  async function bundleAndRun() {
     errorDiv.style.display = 'none';
-    iframe.srcdoc = '<div class="loading">⏳ Booting Nodepod...</div>';
+    iframe.srcdoc = '<div class="loading">⏳ Bundling with esbuild...</div>';
+
+    if (!window.esbuild) {
+      errorDiv.textContent = '❌ esbuild failed to load. Check your internet.';
+      errorDiv.style.display = 'block';
+      iframe.srcdoc = '<div class="loading">⚠️ Failed to load bundler</div>';
+      return;
+    }
 
     try {
-      // 1. Boot Nodepod with the user's files
-      const nodepod = await Nodepod.boot({ files });
-
-      // 2. Install npm dependencies if package.json exists
-      if (files['package.json']) {
-        iframe.srcdoc = '<div class="loading">📦 Installing dependencies (npm install)...</div>';
-        await nodepod.install();
-      }
-
-      // 3. Detect and start the dev server
-      iframe.srcdoc = '<div class="loading">🚀 Starting dev server...</div>';
-      let proc;
-
-      // Check for common dev server commands
-      if (files['vite.config.js'] || files['vite.config.ts']) {
-        proc = await nodepod.spawn('npx', ['vite', '--port', '5173', '--host']);
-      } else if (files['next.config.js']) {
-        proc = await nodepod.spawn('npx', ['next', 'dev', '--port', '3000']);
-      } else if (files['package.json']) {
-        const pkg = JSON.parse(files['package.json']);
-        if (pkg.scripts && pkg.scripts.dev) {
-          proc = await nodepod.spawn('npm', ['run', 'dev']);
-        } else if (pkg.scripts && pkg.scripts.start) {
-          proc = await nodepod.spawn('npm', ['run', 'start']);
-        } else {
-          proc = await nodepod.spawn('node', ['index.js']);
-        }
-      } else {
-        // Fallback: serve index.html directly
-        const htmlContent = files['index.html'] || '<h1>No index.html found</h1>';
-        iframe.srcdoc = htmlContent;
-        return;
-      }
-
-      // 4. Capture the server URL from stdout
-      proc.on('output', (data) => {
-        console.log('[Nodepod]', data);
-        const match = data.match(/https?:\/\/localhost:\d+/);
-        if (match) {
-          iframe.src = match[0];
-        }
-      });
-
-      proc.on('exit', (code) => {
-        if (code !== 0) {
-          errorDiv.textContent = '❌ Dev server exited with code ' + code;
-          errorDiv.style.display = 'block';
-        }
+      await window.esbuild.initialize({
+        wasmURL: 'https://cdn.jsdelivr.net/npm/esbuild-wasm@0.20.2/esbuild.wasm',
       });
     } catch (err) {
-      console.error(err);
-      errorDiv.textContent = '❌ Sandbox error: ' + err.message;
+      errorDiv.textContent = '❌ esbuild init error: ' + err.message;
       errorDiv.style.display = 'block';
-      iframe.srcdoc = '<div class="loading">⚠️ Failed to start sandbox</div>';
+      return;
+    }
+
+    // Determine entry point
+    let entryFile = '/index.js';
+    if (fileMap.has('/src/index.js')) entryFile = '/src/index.js';
+    if (fileMap.has('/src/index.tsx')) entryFile = '/src/index.tsx';
+    if (fileMap.has('/index.html')) {
+      // Pure HTML: just serve it
+      const htmlContent = fileMap.get('/index.html');
+      iframe.srcdoc = htmlContent;
+      return;
+    }
+
+    // Rewrite imports in JS/JSX files
+    const rewritten = new Map();
+    for (const [path, content] of fileMap.entries()) {
+      if (path.endsWith('.js') || path.endsWith('.jsx') || path.endsWith('.ts') || path.endsWith('.tsx')) {
+        rewritten.set(path, rewriteImports(content));
+      } else {
+        rewritten.set(path, content);
+      }
+    }
+
+    // Virtual file system plugin for esbuild
+    const fsPlugin = {
+      name: 'fs',
+      setup(build) {
+        build.onResolve({ filter: /.*/ }, args => {
+          if (args.path.startsWith('.') || args.path.startsWith('/')) {
+            return { path: args.path, namespace: 'file' };
+          }
+          return { external: true };
+        });
+        build.onLoad({ filter: /.*/, namespace: 'file' }, async (args) => {
+          const content = rewritten.get(args.path);
+          if (content) return { contents: content, loader: 'jsx' };
+          return null;
+        });
+      }
+    };
+
+    try {
+      const result = await window.esbuild.build({
+        entryPoints: [entryFile],
+        bundle: true,
+        write: false,
+        format: 'iife',
+        globalName: 'SandboxModule',
+        platform: 'browser',
+        plugins: [fsPlugin],
+        loader: { '.js': 'jsx', '.ts': 'tsx', '.tsx': 'tsx' },
+        define: { 'process.env.NODE_ENV': '"development"' },
+      });
+
+      const bundledCode = result.outputFiles[0].text;
+
+      // Build final iframe HTML with React CDNs (if needed)
+      const reactCDNs = `
+        <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"><\\/script>
+        <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"><\\/script>
+        <script src="https://cdn.jsdelivr.net/npm/react-router-dom@6.14.2/umd/react-router-dom.development.js"><\\/script>
+      `;
+      const iframeHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Preview</title>${reactCDNs}</head><body><div id="root"></div><script>
+        window.onerror = function(msg,url,line,col,error){ parent.postMessage({type:"error",error:msg},"*"); return true; };
+        try { ${bundledCode} if (typeof SandboxModule !== "undefined" && SandboxModule.default) { const root = ReactDOM.createRoot(document.getElementById("root")); root.render(React.createElement(SandboxModule.default)); } } catch(err) { parent.postMessage({type:"error",error:err.message},"*"); }
+      <\\/script></body></html>`;
+      iframe.srcdoc = iframeHtml;
+    } catch (err) {
+      errorDiv.textContent = '❌ Build error: ' + err.message;
+      errorDiv.style.display = 'block';
+      iframe.srcdoc = '<div class="loading">⚠️ Build failed</div>';
     }
   }
 
-  runBtn.addEventListener('click', runSandbox);
-  runSandbox();
+  window.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'error') {
+      errorDiv.textContent = '❌ Runtime Error: ' + event.data.error;
+      errorDiv.style.display = 'block';
+      setTimeout(() => { errorDiv.style.display = 'none'; }, 8000);
+    }
+  });
+
+  document.getElementById('run-btn').addEventListener('click', bundleAndRun);
+  bundleAndRun();
 </script>
 </body>
 </html>`;
@@ -241,7 +281,5 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Nodepod Sandbox Preview Engine running on port ${PORT}`);
-  console.log(`   Uses Nodepod (browser-native Node.js) for full sandbox`);
-  console.log(`   Supports npm install, dev servers, instant previews`);
+  console.log(`🚀 Reliable esbuild Sandbox running on port ${PORT}`);
 });

@@ -59,7 +59,7 @@ app.post('/api/preview', (req, res) => {
 });
 
 // ----------------------------------------------------------------------
-// Serve preview page with Sandpack (using CDN for React & Sandpack)
+// Serve preview page with Nodepod sandbox
 app.get('/preview/:id', (req, res) => {
   const { id } = req.params;
   const entry = previews.get(id);
@@ -68,78 +68,167 @@ app.get('/preview/:id', (req, res) => {
   }
 
   const files = entry.files;
-  // Convert files object to a map that Sandpack understands
-  const sandpackFiles = {};
-  for (const [filePath, content] of Object.entries(files)) {
-    // Ensure path starts with '/'
-    const normalizedPath = filePath.startsWith('/') ? filePath : '/' + filePath;
-    sandpackFiles[normalizedPath] = content;
-  }
-  const filesJson = JSON.stringify(sandpackFiles).replace(/</g, '\\u003c');
-
-  // Determine template (default to react if package.json has react or if .jsx files exist)
-  let template = 'vanilla';
-  if (files['package.json']) {
-    try {
-      const pkg = JSON.parse(files['package.json']);
-      if (pkg.dependencies && (pkg.dependencies.react || pkg.devDependencies && pkg.devDependencies.react)) {
-        template = 'react';
-      }
-    } catch(e) {}
-  }
-  // Also check for .jsx files
-  if (!template && Object.keys(files).some(f => f.endsWith('.jsx'))) template = 'react';
+  const filesJson = JSON.stringify(files).replace(/</g, '\\u003c');
 
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sandpack Preview</title>
+  <title>Nodepod Sandbox Preview</title>
   <style>
-    body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
-    #root { width: 100%; height: 100%; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body, html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, 'Segoe UI', monospace; }
+    #toolbar {
+      background: #1e1e2f;
+      color: white;
+      padding: 10px 20px;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #333;
+    }
+    #run-btn {
+      background: #0a5;
+      border: none;
+      color: white;
+      padding: 6px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    #run-btn:hover { background: #0a7; }
+    #container { height: calc(100% - 50px); }
+    #preview-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: white;
+    }
+    #error-overlay {
+      position: fixed;
+      bottom: 20px;
+      left: 20px;
+      right: 20px;
+      background: #ff4444cc;
+      backdrop-filter: blur(8px);
+      color: white;
+      padding: 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 13px;
+      z-index: 1000;
+      display: none;
+      max-height: 200px;
+      overflow: auto;
+      border-left: 4px solid #ff0000;
+    }
+    .loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 16px 24px;
+      border-radius: 12px;
+      font-size: 14px;
+      z-index: 200;
+    }
   </style>
-  <!-- Load React, ReactDOM, and Sandpack from CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@codesandbox/sandpack-react@2.20.0/dist/index.umd.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@codesandbox/sandpack-react@2.20.0/dist/index.css">
+  <!-- Import map for Nodepod -->
+  <script type="importmap">
+    {
+      "imports": {
+        "@scelar/nodepod": "https://esm.sh/@scelar/nodepod@0.2.3"
+      }
+    }
+  </script>
 </head>
 <body>
-  <div id="root"></div>
-  <script>
-    // Wait for Sandpack to be available
-    function init() {
-      if (!window.SandpackReact) {
-        setTimeout(init, 100);
+<div id="toolbar">
+  <span>⚡ Nodepod Sandbox (npm install + dev server)</span>
+  <button id="run-btn">▶ Run Preview</button>
+</div>
+<div id="container">
+  <iframe id="preview-frame" title="preview" sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-modals"></iframe>
+</div>
+<div id="error-overlay"></div>
+
+<script type="module">
+  import { Nodepod } from '@scelar/nodepod';
+
+  const files = ${filesJson};
+  const iframe = document.getElementById('preview-frame');
+  const errorDiv = document.getElementById('error-overlay');
+  const runBtn = document.getElementById('run-btn');
+
+  async function runSandbox() {
+    errorDiv.style.display = 'none';
+    iframe.srcdoc = '<div class="loading">⏳ Booting Nodepod...</div>';
+
+    try {
+      // 1. Boot Nodepod with the user's files
+      const nodepod = await Nodepod.boot({ files });
+
+      // 2. Install npm dependencies if package.json exists
+      if (files['package.json']) {
+        iframe.srcdoc = '<div class="loading">📦 Installing dependencies (npm install)...</div>';
+        await nodepod.install();
+      }
+
+      // 3. Detect and start the dev server
+      iframe.srcdoc = '<div class="loading">🚀 Starting dev server...</div>';
+      let proc;
+
+      // Check for common dev server commands
+      if (files['vite.config.js'] || files['vite.config.ts']) {
+        proc = await nodepod.spawn('npx', ['vite', '--port', '5173', '--host']);
+      } else if (files['next.config.js']) {
+        proc = await nodepod.spawn('npx', ['next', 'dev', '--port', '3000']);
+      } else if (files['package.json']) {
+        const pkg = JSON.parse(files['package.json']);
+        if (pkg.scripts && pkg.scripts.dev) {
+          proc = await nodepod.spawn('npm', ['run', 'dev']);
+        } else if (pkg.scripts && pkg.scripts.start) {
+          proc = await nodepod.spawn('npm', ['run', 'start']);
+        } else {
+          proc = await nodepod.spawn('node', ['index.js']);
+        }
+      } else {
+        // Fallback: serve index.html directly
+        const htmlContent = files['index.html'] || '<h1>No index.html found</h1>';
+        iframe.srcdoc = htmlContent;
         return;
       }
-      const { Sandpack } = window.SandpackReact;
-      const files = ${filesJson};
-      const root = ReactDOM.createRoot(document.getElementById('root'));
-      root.render(
-        React.createElement(Sandpack, {
-          files: files,
-          template: '${template}',
-          options: {
-            showNavigator: true,
-            showConsole: true,
-            showConsoleButton: true,
-            showLineNumbers: true,
-            showInlineErrors: true,
-            showErrorOverlay: true,
-            editorHeight: '100%',
-            editorWidthPercentage: 50,
-          },
-          customSetup: {
-            entry: '/index.js',
-          },
-        })
-      );
+
+      // 4. Capture the server URL from stdout
+      proc.on('output', (data) => {
+        console.log('[Nodepod]', data);
+        const match = data.match(/https?:\/\/localhost:\d+/);
+        if (match) {
+          iframe.src = match[0];
+        }
+      });
+
+      proc.on('exit', (code) => {
+        if (code !== 0) {
+          errorDiv.textContent = '❌ Dev server exited with code ' + code;
+          errorDiv.style.display = 'block';
+        }
+      });
+    } catch (err) {
+      console.error(err);
+      errorDiv.textContent = '❌ Sandbox error: ' + err.message;
+      errorDiv.style.display = 'block';
+      iframe.srcdoc = '<div class="loading">⚠️ Failed to start sandbox</div>';
     }
-    init();
-  </script>
+  }
+
+  runBtn.addEventListener('click', runSandbox);
+  runSandbox();
+</script>
 </body>
 </html>`;
 
@@ -152,7 +241,7 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Sandpack Preview Engine running on port ${PORT}`);
-  console.log(`   Uses Sandpack React CDN for full sandbox`);
-  console.log(`   Supports npm packages, multi-file projects`);
+  console.log(`🚀 Nodepod Sandbox Preview Engine running on port ${PORT}`);
+  console.log(`   Uses Nodepod (browser-native Node.js) for full sandbox`);
+  console.log(`   Supports npm install, dev servers, instant previews`);
 });

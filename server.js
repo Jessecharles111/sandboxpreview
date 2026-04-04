@@ -57,7 +57,7 @@ app.post('/api/preview', (req, res) => {
   }
 });
 
-// Serve preview page using Sandpack Client (no React, reliable)
+// Serve preview page with Sandpack via ES modules (no global variable issues)
 app.get('/preview/:id', (req, res) => {
   const { id } = req.params;
   const entry = previews.get(id);
@@ -76,38 +76,62 @@ app.get('/preview/:id', (req, res) => {
   <title>Sandpack Preview</title>
   <style>
     body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
-    #sandpack { width: 100%; height: 100%; }
+    #root { width: 100%; height: 100%; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/@codesandbox/sandpack-client@2.19.10/dist/sandpack-client.js"></script>
+  <!-- Import map for ES modules -->
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "@codesandbox/sandpack-react": "https://esm.sh/@codesandbox/sandpack-react@2.20.0"
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="https://esm.sh/@codesandbox/sandpack-react@2.20.0/dist/index.css">
 </head>
 <body>
-  <div id="sandpack"></div>
-  <script>
+  <div id="root"></div>
+  <script type="module">
+    import React from 'react';
+    import ReactDOM from 'react-dom/client';
+    import { Sandpack } from '@codesandbox/sandpack-react';
+
     const files = ${filesJson};
-    // Convert to Sandpack file format: { "/index.js": { code: "..." } }
+    // Convert to Sandpack format: { "/index.js": "content" }
     const sandpackFiles = {};
     for (const [filePath, content] of Object.entries(files)) {
       const normalizedPath = filePath.startsWith('/') ? filePath : '/' + filePath;
-      sandpackFiles[normalizedPath] = { code: content };
+      sandpackFiles[normalizedPath] = content;
     }
-    // Determine entry point
-    let entry = '/index.html';
-    if (files['package.json']) entry = '/index.js';
-    if (files['src/index.js']) entry = '/src/index.js';
-    if (files['src/index.tsx']) entry = '/src/index.tsx';
-    const container = document.getElementById('sandpack');
-    const client = new SandpackClient(container, {
-      files: sandpackFiles,
-      entry: entry,
-      showNavigator: true,
-      showConsole: true,
-      showConsoleButton: true,
-      showLineNumbers: true,
-      showInlineErrors: true,
-      showErrorOverlay: true,
-    }, {
-      bundlerURL: 'https://sandpack.codesandbox.io',
-    });
+
+    // Auto-detect template
+    let template = 'vanilla';
+    if (files['package.json']) {
+      try {
+        const pkg = JSON.parse(files['package.json']);
+        if (pkg.dependencies && pkg.dependencies.react) template = 'react';
+      } catch(e) {}
+    }
+    if (Object.keys(files).some(f => f.endsWith('.jsx'))) template = 'react';
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(
+      React.createElement(Sandpack, {
+        files: sandpackFiles,
+        template: template,
+        options: {
+          showNavigator: true,
+          showConsole: true,
+          showConsoleButton: true,
+          showLineNumbers: true,
+          showInlineErrors: true,
+          showErrorOverlay: true,
+          editorHeight: '100%',
+          editorWidthPercentage: 50,
+        }
+      })
+    );
   </script>
 </body>
 </html>`;
@@ -121,6 +145,5 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Sandpack Client Preview Engine running on port ${PORT}`);
-  console.log(`   Uses official Sandpack client (reliable, no React)`);
+  console.log(`🚀 Sandpack Preview Engine running on port ${PORT}`);
 });

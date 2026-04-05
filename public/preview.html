@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Snapshot Preview</title>
+  <title>Preview</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body, html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, monospace; }
@@ -76,7 +76,6 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .loading-text { color: #8b9bb0; font-size: 14px; }
   </style>
-  <!-- Load esbuild from local static files (no external CDN) -->
   <script src="/esbuild.wasm.js"></script>
 </head>
 <body>
@@ -94,16 +93,19 @@
 <div id="error"></div>
 
 <script>
-  const urlParams = new URLSearchParams(window.location.search);
-  const filesJson = urlParams.get('files');
-  if (!filesJson) {
-    document.getElementById('error').textContent = 'No files provided.';
-    document.getElementById('error').style.display = 'block';
-    document.getElementById('loading-overlay').style.display = 'none';
-    throw new Error('No files');
+  // Get preview ID from URL path (the page is loaded at /preview/:id)
+  const previewId = window.location.pathname.split('/').pop();
+  
+  async function fetchFiles() {
+    const response = await fetch('/api/preview/' + previewId);
+    if (!response.ok) throw new Error('Failed to load files');
+    const data = await response.json();
+    return data.files;
   }
-  const files = JSON.parse(decodeURIComponent(filesJson));
-  const fileMap = new Map(Object.entries(files));
+
+  const filesPromise = fetchFiles();
+  let fileMap = null;
+
   const iframe = document.getElementById('preview-frame');
   const errorDiv = document.getElementById('error');
   const loadingOverlay = document.getElementById('loading-overlay');
@@ -125,25 +127,28 @@
     loadingOverlay.style.display = 'flex';
     iframe.srcdoc = '';
 
-    // Wait for esbuild to load (local script should load quickly)
-    let attempts = 0;
-    while (!window.esbuild && attempts < 20) {
-      await new Promise(r => setTimeout(r, 100));
-      attempts++;
-    }
     if (!window.esbuild) {
-      errorDiv.textContent = '❌ esbuild failed to load. Please refresh the page.';
+      errorDiv.textContent = '❌ esbuild failed to load.';
       errorDiv.style.display = 'block';
       hideLoading();
       return;
     }
 
     try {
-      await window.esbuild.initialize({
-        wasmURL: '/esbuild.wasm',
-      });
+      await window.esbuild.initialize({ wasmURL: '/esbuild.wasm' });
     } catch (err) {
       errorDiv.textContent = '❌ esbuild init error: ' + err.message;
+      errorDiv.style.display = 'block';
+      hideLoading();
+      return;
+    }
+
+    let files;
+    try {
+      files = await filesPromise;
+      fileMap = new Map(Object.entries(files));
+    } catch (err) {
+      errorDiv.textContent = '❌ Failed to load files: ' + err.message;
       errorDiv.style.display = 'block';
       hideLoading();
       return;

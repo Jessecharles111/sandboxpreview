@@ -76,7 +76,42 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .loading-text { color: #8b9bb0; font-size: 14px; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/esbuild-wasm@0.20.2/esbuild.wasm.js"></script>
+  <!-- Try multiple CDNs for esbuild-wasm -->
+  <script>
+    // Array of CDN URLs to try
+    const esbuildCDNs = [
+      'https://cdn.jsdelivr.net/npm/esbuild-wasm@0.20.2/esbuild.wasm.js',
+      'https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm.js',
+      'https://cdn.skypack.dev/esbuild-wasm@0.20.2/esbuild.wasm.js'
+    ];
+    let currentCDNIndex = 0;
+
+    function loadEsbuild() {
+      if (currentCDNIndex >= esbuildCDNs.length) {
+        document.getElementById('error').textContent = '❌ Failed to load esbuild from all CDNs. Please check your internet connection.';
+        document.getElementById('error').style.display = 'block';
+        document.getElementById('loading-overlay').style.display = 'none';
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = esbuildCDNs[currentCDNIndex];
+      script.onload = () => {
+        console.log('esbuild loaded from', esbuildCDNs[currentCDNIndex]);
+        // Initialize after load
+        if (window.esbuild) {
+          window.esbuildInitialized = true;
+          // The main bundleAndRun will be called after this
+        }
+      };
+      script.onerror = () => {
+        console.warn('Failed to load from', esbuildCDNs[currentCDNIndex]);
+        currentCDNIndex++;
+        loadEsbuild();
+      };
+      document.head.appendChild(script);
+    }
+    loadEsbuild();
+  </script>
 </head>
 <body>
 <div id="toolbar">
@@ -98,6 +133,7 @@
   if (!filesJson) {
     document.getElementById('error').textContent = 'No files provided.';
     document.getElementById('error').style.display = 'block';
+    document.getElementById('loading-overlay').style.display = 'none';
     throw new Error('No files');
   }
   const files = JSON.parse(decodeURIComponent(filesJson));
@@ -123,8 +159,14 @@
     loadingOverlay.style.display = 'flex';
     iframe.srcdoc = '';
 
+    // Wait for esbuild to be loaded (max 10 seconds)
+    let attempts = 0;
+    while (!window.esbuild && attempts < 20) {
+      await new Promise(r => setTimeout(r, 500));
+      attempts++;
+    }
     if (!window.esbuild) {
-      errorDiv.textContent = '❌ esbuild failed to load.';
+      errorDiv.textContent = '❌ esbuild failed to load. Please refresh the page or check your internet.';
       errorDiv.style.display = 'block';
       hideLoading();
       return;

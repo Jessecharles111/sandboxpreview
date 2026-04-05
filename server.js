@@ -37,14 +37,12 @@ app.post('/api/preview', async (req, res) => {
       return res.status(400).json({ error: 'Missing "html" or "files"' });
     }
 
-    console.log('Creating sandbox...');
+    console.log('Creating E2B sandbox...');
     const sandbox = await Sandbox.create({ apiKey: E2B_API_KEY });
-    console.log('Sandbox created, writing files...');
     for (const [filePath, content] of Object.entries(files)) {
       await sandbox.files.write(filePath, content);
     }
 
-    // If no package.json, serve index.html directly
     if (!files['package.json']) {
       const htmlContent = files['index.html'] || '<h1>No index.html</h1>';
       const id = generateId();
@@ -56,7 +54,6 @@ app.post('/api/preview', async (req, res) => {
     console.log('Running npm install...');
     const installProc = await sandbox.process.exec('npm install');
     await installProc.wait();
-    console.log('npm install completed');
 
     console.log('Starting dev server...');
     await sandbox.process.exec('npm run dev', { background: true });

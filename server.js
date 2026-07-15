@@ -97,7 +97,7 @@ function startDevServer(id) {
     return;
   }
 
-  // Normal npm install
+  // Normal npm install flow
   const env = { ...process.env, NODE_ENV: 'development', npm_config_cache: NPM_CACHE };
   const install = spawn('npm', ['install'], { cwd: tmpDir, env, shell: true });
   install.stdout.on('data', d => log(d.toString()));
